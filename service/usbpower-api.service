@@ -1,0 +1,52 @@
+[Unit]
+Description=usbpower REST API (serial bridge to usb_crtl_power_x4 Arduino)
+Documentation=https://github.com/swbowerx/nano-usbpower
+After=network.target
+# No hard dependency on a .device unit: the default port is the udev symlink
+# /dev/usbpower, which systemd does not track as a device unit. If the board
+# is absent the service simply retries (Restart=on-failure) until it appears.
+# The installer inserts an After=/Wants= pair here when configured with a raw
+# /dev/ttyACM* or /dev/ttyUSB* path instead.
+# USBPOWER_DEVICE_DEPS
+
+[Service]
+Type=simple
+# Must be a member of the 'dialout' group to open the serial port.
+User=USBPOWER_USER
+Group=dialout
+ExecStart=/usr/bin/python3 /opt/usbpower-api/usbpower_api.py \
+    --port /dev/usbpower \
+    --baud 115200 \
+    --host 127.0.0.1 \
+    --listen-port 9090
+Restart=on-failure
+RestartSec=3
+# Exit code 78 (EX_CONFIG) means an unrecoverable configuration problem --
+# the HTTP port is taken, or we are not allowed to bind it. Retrying cannot
+# fix that, so fail once with a clear message rather than looping forever.
+RestartPreventExitStatus=78
+
+# The board resets when the port is opened; give it time before restarting.
+TimeoutStartSec=30
+
+# Hardening. The service needs nothing but the serial port and a TCP socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Serial port access. DeviceAllow needs the real device node, not a symlink,
+# so this permits the CDC-ACM and USB-serial classes rather than one path.
+# char-ttyACM = 166 (CDC ACM), char-ttyUSB = 188 (usb-serial adapters).
+DeviceAllow=char-ttyACM rw
+DeviceAllow=char-ttyUSB rw
+DevicePolicy=closed
+
+[Install]
+WantedBy=multi-user.target

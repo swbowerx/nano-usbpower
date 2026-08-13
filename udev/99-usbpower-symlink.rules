@@ -1,0 +1,44 @@
+# Give the usbpower relay controller a stable device name: /dev/usbpower
+#
+# WHY THIS MATTERS
+#
+# /dev/ttyACM0 is assigned in plug order, not per device. An Arduino Uno is a
+# USB-CDC device, and so is a Pixhawk / PX4 / ArduPilot flight controller, a
+# 3D printer board, and plenty of other hardware -- they all compete for
+# ttyACM0, ttyACM1, ... depending on what was plugged in first.
+#
+# That is dangerous for a service that opens a port automatically at boot. If
+# the relay controller's service were pointed at a bare /dev/ttyACM0 and a
+# flight controller happened to claim that name, the service would open the
+# flight controller's port, hold it open exclusively (so QGroundControl or
+# MAVProxy could not connect), write relay commands into its MAVLink stream,
+# and toggle DTR on open -- which resets many boards.
+#
+# This rule matches the relay controller by its unique USB serial number and
+# creates /dev/usbpower, which always points at the right board no matter what
+# else is plugged in or in what order. Point the service at /dev/usbpower
+# instead of /dev/ttyACM0 and the collision cannot happen.
+#
+# ADAPTING THIS FOR A DIFFERENT BOARD
+#
+# Find your board's identifiers:
+#
+#     udevadm info -a -n /dev/ttyACM0 | grep -E 'idVendor|idProduct|serial'
+#
+# then substitute them below. Common values:
+#
+#     Arduino Uno R3 (genuine)     idVendor 2341  idProduct 0043
+#     Arduino Nano (CH340 clone)   idVendor 1a86  idProduct 7523
+#     Arduino Mega 2560            idVendor 2341  idProduct 0042
+#
+# CH340-based clones usually share one serial number across every unit (or
+# report none at all), so ATTRS{serial} cannot distinguish two of them. For
+# those, drop the serial match and use the physical port path instead
+# (KERNELS=="1-2.4.1"), accepting that it pins the board to one USB socket.
+#
+# After editing:
+#     sudo cp udev/99-usbpower-symlink.rules /etc/udev/rules.d/
+#     sudo udevadm control --reload-rules && sudo udevadm trigger
+#     ls -l /dev/usbpower
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", ATTRS{serial}=="55332333230351709192", SYMLINK+="usbpower", GROUP="dialout", MODE="0660"

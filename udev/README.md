@@ -1,4 +1,44 @@
-# USB hub autosuspend fix
+# udev rules
+
+Two independent rules ship here:
+
+| File | Purpose |
+| --- | --- |
+| `99-usbpower-symlink.rules` | Stable `/dev/usbpower` name so the board is never confused with other USB serial hardware (Pixhawk flight controllers, printers, radios). **Install this one.** |
+| `99-usb-hub-autosuspend-off.rules` | Fixes intermittent dropouts when the board is behind a USB hub. Only needed if you see that symptom. |
+
+---
+
+# Stable device name (`99-usbpower-symlink.rules`)
+
+`/dev/ttyACM0` is assigned in plug order, not per device, and USB-CDC hardware
+of every kind competes for it -- including PX4/ArduPilot flight controllers.
+Any service that opens a port automatically at boot must therefore address the
+board by identity, not by number, or it may open somebody else's device, hold
+it exclusively, and write into it.
+
+This rule matches the board's unique USB serial number and creates
+`/dev/usbpower`. Find your board's values with:
+
+```sh
+udevadm info -a -n /dev/ttyACM0 | grep -E 'idVendor|idProduct|serial'
+```
+
+edit them into the rule, then:
+
+```sh
+sudo cp udev/99-usbpower-symlink.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+ls -l /dev/usbpower
+```
+
+The rule file itself documents how to adapt it for Nano/CH340 clones, which
+frequently share one serial number across all units and must be pinned to a
+physical USB port instead.
+
+---
+
+# USB hub autosuspend fix (`99-usb-hub-autosuspend-off.rules`)
 
 ## The problem
 
