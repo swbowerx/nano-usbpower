@@ -1,0 +1,20 @@
+# Disable Linux USB autosuspend for USB hubs (device class 0x09).
+#
+# Why: on some machines the Arduino sits behind one or more external USB
+# hubs (a laptop dock, a hub-heavy port replicator, etc). Linux's runtime
+# power management can idle-suspend a hub's uplink after only a couple
+# seconds of inactivity; waking it back up for the next transfer can take
+# long enough, or occasionally drop the first transaction, that a command
+# sent to the Arduino gets no reply. The Arduino itself never crashes or
+# resets when this happens -- it's purely a host-side USB link-power delay.
+#
+# This rule targets the USB hub device class generically (bDeviceClass 09),
+# not a specific vendor/product ID, so it applies to whatever hub hardware
+# is actually in the path on a given machine. It has no effect on non-hub
+# devices, and no effect at all on ports that go straight from the
+# motherboard's own root USB controller to the Arduino with no external hub
+# in between -- those were never affected by this issue in the first place.
+#
+# See ../udev/README.md for install instructions and more detail on scope.
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bDeviceClass}=="09", TEST=="power/control", ATTR{power/control}="on"

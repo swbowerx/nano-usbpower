@@ -26,6 +26,11 @@
     log clear                   erase the event log
     reset                       turn all managed pins OFF, cancel all timers
 
+  Ctrl-C (0x03) or Ctrl-U (0x15) clears whatever's currently in the line
+  buffer -- useful if a partial/garbled line ever gets "stuck" waiting for a
+  terminator that never arrives. A stuck line also auto-clears on its own
+  after LINE_IDLE_TIMEOUT_MS (default 3s) of silence.
+
   Pin tokens: "d4" / "D4" / "4" (digital), or "a0".."a5" (analog pin used as
   digital I/O). Only pins listed in PIN_LIST[] below are controllable.
   Note: on a Nano, A6/A7 are analog-input only and cannot be used here; D0/D1
@@ -60,6 +65,7 @@
 #define CYCLE_DEFAULT_SEC   5       // default off-time for `cycle` with no arg
 #define RELAY_ACTIVE_LOW    true    // true: LOW=relay ON (most relay modules), false: HIGH=ON
 #define CMD_BUF_SIZE        48
+#define LINE_IDLE_TIMEOUT_MS 3000  // auto-clear a partial/stuck line after this much silence
 
 // Managed digital pins. Default = 4-channel relay board (D4-D7), matching
 // this sketch's name. Extend to any subset of D2..D13 / A0..A5 as needed --
@@ -89,6 +95,7 @@ uint16_t logCount = 0;  // valid entries currently stored (<= LOG_SIZE)
 
 char cmdBuf[CMD_BUF_SIZE];
 uint8_t cmdLen = 0;
+unsigned long lastCharAt = 0;  // millis() of the last byte received, for the idle-line timeout
 
 // =========================== helpers ===========================
 
@@ -188,13 +195,18 @@ void setPin(uint8_t idx, bool on, bool doLog) {
 
   writeRelay(pin, on);
 
+  Serial.print(F("D"));
+  Serial.print(pin);
   if (changed) {
     if (doLog) logAdd(pin, on, durSec);
     pinState[idx] = on;
     pinStateSince[idx] = now;
-    Serial.print(F("D"));
-    Serial.print(pin);
     Serial.print(F(" -> "));
+    Serial.println(on ? F("ON") : F("OFF"));
+  } else {
+    // Still print something on a no-op so the terminal always advances a
+    // line and the user gets confirmation the command was received.
+    Serial.print(F(" already "));
     Serial.println(on ? F("ON") : F("OFF"));
   }
 }
@@ -335,11 +347,18 @@ void cmdSetAll(bool on) {
 
 void cmdSet(char *a) {
   if (!a) { printErr(F("usage: set on|off | set <pin> on|off")); return; }
-  if (eq(a, "on") || eq(a, "off")) { cmdSetAll(eq(a, "on")); return; }
+  if (eq(a, "on") || eq(a, "off")) {
+    // Reject trailing garbage like "set on 4" instead of silently ignoring
+    // it and acting on just the "on"/"off" part.
+    if (strtok(nullptr, " ")) { printErr(F("usage: set on|off (no extra args)")); return; }
+    cmdSetAll(eq(a, "on"));
+    return;
+  }
   int16_t pin = parsePin(a);
   if (pin < 0) { printErr(F("unknown pin")); return; }
   char *b = strtok(nullptr, " ");
   if (!b || (!eq(b, "on") && !eq(b, "off"))) { printErr(F("usage: set <pin> on|off")); return; }
+  if (strtok(nullptr, " ")) { printErr(F("usage: set <pin> on|off (no extra args)")); return; }
   uint8_t idx = idxOf(pin);
   pinAction[idx] = ACTION_NONE;
   setPin(idx, eq(b, "on"), true);
@@ -444,17 +463,42 @@ void loop() {
   // ---- serial command reader ----
   while (Serial.available()) {
     char c = Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
-      cmdBuf[cmdLen] = '\0';
-      if (cmdLen > 0) processCommand(cmdBuf);
+    lastCharAt = millis();
+
+    // Ctrl-C (0x03) or Ctrl-U (0x15): abort/clear whatever's in the line
+    // buffer right now. Checked as a raw control byte (not a text command)
+    // so it works even when the buffer already holds stuck/partial garbage
+    // that would otherwise just swallow anything typed after it.
+    if (c == 0x03 || c == 0x15) {
       cmdLen = 0;
+      Serial.println();
+      Serial.println(F("(line cleared)"));
+      continue;
+    }
+
+    // Accept CR, LF, or CRLF as a line terminator: some terminal apps (e.g.
+    // GTKTerm) send a bare CR for Enter with no way to configure an LF, while
+    // others send LF or CRLF. Firing only when the buffer is non-empty means
+    // a CRLF pair is treated as a single terminator, not two commands.
+    if (c == '\r' || c == '\n') {
+      if (cmdLen > 0) {
+        cmdBuf[cmdLen] = '\0';
+        processCommand(cmdBuf);
+        cmdLen = 0;
+      }
     } else if (cmdLen < CMD_BUF_SIZE - 1) {
       cmdBuf[cmdLen++] = c;
     } else {
       cmdLen = 0;
       printErr(F("line too long"));
     }
+  }
+
+  // ---- stale partial line: auto-clear after a few seconds of silence ----
+  if (cmdLen > 0 && (millis() - lastCharAt) > LINE_IDLE_TIMEOUT_MS) {
+    cmdLen = 0;
+    Serial.println();
+    printErr(F("line timed out, cleared (use Ctrl-C to clear manually)"));
   }
 
   // ---- scheduled action timers (auto-off, cycle-resume) ----
