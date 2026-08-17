@@ -19,6 +19,8 @@ without putting authentication and TLS in front of it.
 import argparse
 import errno
 import json
+import mimetypes
+from pathlib import Path
 import re
 import threading
 import time
@@ -292,6 +294,9 @@ def positive_int(value, name, maximum=65535):
 # HTTP layer
 # ----------------------------------------------------------------------------
 
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "usbpower-api/1.0"
     device = None       # injected by main()
@@ -304,6 +309,37 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _static(self, relpath="index.html"):
+        """Serve dashboard assets bundled next to this script."""
+        if not STATIC_DIR.exists():
+            return self._json(404, {
+                "ok": False,
+                "error": "dashboard assets are not installed",
+            })
+
+        root = STATIC_DIR.resolve()
+        target = (root / relpath.lstrip("/")).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return self._json(404, {"ok": False, "error": "not found"})
+
+        if not target.is_file():
+            return self._json(404, {"ok": False, "error": "not found"})
+
+        content_type, _ = mimetypes.guess_type(str(target))
+        if not content_type:
+            content_type = "application/octet-stream"
+
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if target.name == "index.html":
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -348,7 +384,14 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         query = parse_qs(url.query)
 
-        if path in ("/", "/api"):
+        if path == "/":
+            return self._static("index.html")
+
+        m = re.match(r"^/static/(.+)$", path)
+        if m:
+            return self._static(m.group(1))
+
+        if path == "/api":
             return self._json(200, {
                 "service": "usbpower-api",
                 "endpoints": ENDPOINTS,

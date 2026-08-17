@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>USB Power Control</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>USB Power Control</h1>
+      <p id="serviceLine">Connecting...</p>
+    </div>
+    <div class="top-actions">
+      <button id="refreshStatus" type="button">Refresh Status</button>
+      <button id="refreshAll" type="button" class="primary">Refresh All</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="metrics" aria-label="Service metrics">
+      <div class="metric">
+        <span>API</span>
+        <strong id="metricApi">-</strong>
+      </div>
+      <div class="metric">
+        <span>Serial</span>
+        <strong id="metricPort">-</strong>
+      </div>
+      <div class="metric">
+        <span>Baud</span>
+        <strong id="metricBaud">-</strong>
+      </div>
+      <div class="metric">
+        <span>Connected</span>
+        <strong id="metricConnected">-</strong>
+      </div>
+    </section>
+
+    <section class="layout two-one">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Ports</h2>
+          <button id="portsRefresh" type="button">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Port</th>
+                <th>Status</th>
+                <th>Uptime</th>
+                <th>Pending</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="portsBody">
+              <tr>
+                <td colspan="5" class="empty">No status loaded</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="panel controls-panel">
+        <h2>Global</h2>
+        <div class="field">
+          <label for="onSeconds">Auto-off seconds</label>
+          <input id="onSeconds" type="number" min="1" max="65535" inputmode="numeric" placeholder="optional">
+        </div>
+        <div class="field">
+          <label for="cycleSeconds">Cycle seconds</label>
+          <input id="cycleSeconds" type="number" min="1" max="65535" inputmode="numeric" value="2">
+        </div>
+        <div class="button-grid">
+          <button id="allOn" type="button">All On</button>
+          <button id="allOff" type="button">All Off</button>
+          <button id="resetAll" type="button" class="danger">Reset</button>
+        </div>
+      </aside>
+    </section>
+
+    <section class="layout half">
+      <div class="panel">
+        <div class="section-head wrap">
+          <h2>Event Log</h2>
+          <div class="inline-controls">
+            <select id="logPin" aria-label="Log port">
+              <option value="">All ports</option>
+            </select>
+            <input id="logLimit" type="number" min="1" max="65535" inputmode="numeric" value="20" aria-label="Log limit">
+            <button id="refreshLog" type="button">Dump Log</button>
+            <button id="clearLog" type="button">Clear</button>
+          </div>
+        </div>
+        <div id="logEntries" class="log-list">
+          <div class="empty">No log loaded</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Raw Device Command</h2>
+        <div class="command-row">
+          <input id="rawCommand" type="text" spellcheck="false" autocomplete="off" value="status" aria-label="Raw command">
+          <button id="sendRaw" type="button" class="primary">Send</button>
+        </div>
+        <pre id="rawOutput" class="output">{}</pre>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head wrap">
+        <h2>REST Console</h2>
+        <div class="inline-controls">
+          <select id="presetPin" aria-label="Preset pin">
+            <option value="d4">d4</option>
+            <option value="d5">d5</option>
+            <option value="d6">d6</option>
+            <option value="d7">d7</option>
+          </select>
+          <input id="presetSeconds" type="number" min="1" max="65535" inputmode="numeric" value="2" aria-label="Preset seconds">
+          <input id="presetLimit" type="number" min="1" max="65535" inputmode="numeric" value="20" aria-label="Preset limit">
+        </div>
+      </div>
+
+      <div id="endpointPresets" class="preset-grid" aria-label="API endpoint presets"></div>
+
+      <div class="rest-form">
+        <select id="restMethod" aria-label="HTTP method">
+          <option>GET</option>
+          <option>POST</option>
+          <option>DELETE</option>
+        </select>
+        <input id="restPath" type="text" spellcheck="false" autocomplete="off" value="/api/status" aria-label="API path">
+        <button id="sendRest" type="button" class="primary">Send</button>
+      </div>
+      <textarea id="restBody" spellcheck="false" aria-label="JSON body" placeholder='{"seconds": 2}'></textarea>
+      <pre id="restOutput" class="output">{}</pre>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

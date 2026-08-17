@@ -148,8 +148,21 @@ group if needed, then enables and starts it. Options:
 ```sh
 sudo ./service/install.sh --port /dev/ttyUSB0 \
                           --listen-port 9090 \
-                          --host 127.0.0.1 \
+                          --host 0.0.0.0 \
                           --user someuser
+```
+
+The default install binds to all network interfaces on port 9090. Open
+`http://<host-ip>:9090/` for the browser dashboard, or use
+`http://<host-ip>:9090/api` for the JSON endpoint list. Use
+`--host 127.0.0.1` if you want local-only access.
+
+If the dashboard works on `localhost` but not from another machine on the LAN,
+check whether the firewall is blocking port 9090:
+
+```sh
+sudo ufw status
+sudo ufw allow from 192.168.8.0/24 to any port 9090 proto tcp
 ```
 
 Check on it, and remove it, with:
@@ -180,15 +193,16 @@ ss -tlnp | grep :9090
 sudo ./service/install.sh --listen-port 9099
 ```
 
-**Security.** The API binds to `127.0.0.1` and has no authentication. It
-switches physical relays that may control mains-voltage loads -- if you bind it
-to a routable address, put it behind a reverse proxy with TLS and auth, or
-firewall the port.
+**Security.** The default install binds to `0.0.0.0` and has no authentication.
+It switches physical relays that may control mains-voltage loads -- keep it on a
+trusted LAN, firewall the port, or install with `--host 127.0.0.1` and reach it
+through an SSH tunnel or authenticated reverse proxy.
 
 ### Endpoints
 
 | Method | Path | Device command |
 | --- | --- | --- |
+| GET | `/` | browser dashboard |
 | GET | `/api/health` | -- (service and link health) |
 | GET | `/api/help` | `help` |
 | GET | `/api/config` | `config` |

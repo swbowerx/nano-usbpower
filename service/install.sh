@@ -3,7 +3,7 @@
 # Install the usbpower REST API as a systemd service.
 #
 #   sudo ./service/install.sh [--port /dev/ttyACM0] [--listen-port 9090]
-#                             [--host 127.0.0.1] [--user <name>]
+#                             [--host 0.0.0.0] [--user <name>]
 #
 # Uninstall with ./service/uninstall.sh
 #
@@ -18,7 +18,7 @@ UNIT_PATH=/etc/systemd/system/$UNIT_NAME
 # as Pixhawk flight controllers -- see udev/99-usbpower-symlink.rules.
 SERIAL_PORT=/dev/usbpower
 LISTEN_PORT=9090
-BIND_HOST=127.0.0.1
+BIND_HOST=0.0.0.0
 RUN_USER="${SUDO_USER:-$USER}"
 
 while [[ $# -gt 0 ]]; do
@@ -90,6 +90,14 @@ fi
 echo "==> Installing to $INSTALL_DIR"
 install -d -m 0755 "$INSTALL_DIR"
 install -m 0755 "$SRC_DIR/usbpower_api.py" "$INSTALL_DIR/usbpower_api.py"
+if [[ -d "$SRC_DIR/static" ]]; then
+    install -d -m 0755 "$INSTALL_DIR/static"
+    while IFS= read -r -d '' asset; do
+        rel="${asset#$SRC_DIR/static/}"
+        install -d -m 0755 "$INSTALL_DIR/static/$(dirname "$rel")"
+        install -m 0644 "$asset" "$INSTALL_DIR/static/$rel"
+    done < <(find "$SRC_DIR/static" -type f -print0)
+fi
 
 echo "==> Writing $UNIT_PATH"
 # systemd tracks .device units by real kernel devnode, not by udev symlink.
@@ -103,7 +111,7 @@ fi
 
 sed -e "s|USBPOWER_USER|$RUN_USER|" \
     -e "s|--port /dev/usbpower|--port $SERIAL_PORT|" \
-    -e "s|--host 127.0.0.1|--host $BIND_HOST|" \
+    -e "s|--host 0.0.0.0|--host $BIND_HOST|" \
     -e "s|--listen-port 9090|--listen-port $LISTEN_PORT|" \
     -e "s|# USBPOWER_DEVICE_DEPS|$DEVICE_DEPS|" \
     "$SRC_DIR/$UNIT_NAME" > "$UNIT_PATH"
@@ -114,18 +122,26 @@ systemctl daemon-reload
 systemctl enable "$UNIT_NAME"
 systemctl restart "$UNIT_NAME"
 
+DISPLAY_HOST="$BIND_HOST"
+if [[ "$BIND_HOST" == "0.0.0.0" || "$BIND_HOST" == "::" ]]; then
+    DISPLAY_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    DISPLAY_HOST="${DISPLAY_HOST:-$(hostname -f 2>/dev/null || hostname)}"
+fi
+
 sleep 4
 if systemctl is-active --quiet "$UNIT_NAME"; then
     echo
     echo "usbpower-api is running."
     echo "  serial port : $SERIAL_PORT"
-    echo "  API         : http://$BIND_HOST:$LISTEN_PORT/api"
+    echo "  bind        : $BIND_HOST:$LISTEN_PORT"
+    echo "  dashboard   : http://$DISPLAY_HOST:$LISTEN_PORT/"
+    echo "  API         : http://$DISPLAY_HOST:$LISTEN_PORT/api"
     echo
     echo "Try it:"
-    echo "  curl -s http://$BIND_HOST:$LISTEN_PORT/api/status | jq"
+    echo "  curl -s http://$DISPLAY_HOST:$LISTEN_PORT/api/status | jq"
     echo
     echo "Run the full example walkthrough:"
-    echo "  ./examples/api_demo.sh http://$BIND_HOST:$LISTEN_PORT"
+    echo "  ./examples/api_demo.sh http://$DISPLAY_HOST:$LISTEN_PORT"
 else
     echo
     echo "Service failed to start. Recent logs:" >&2
