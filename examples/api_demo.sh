@@ -90,6 +90,14 @@ call GET /api/status
 call GET /api/pins
 call GET /api/pins/d4
 
+hr "Pin aliases"
+call GET    /api/aliases
+call POST   /api/aliases/d7 '{"alias": "drone_203"}'
+call GET    /api/aliases/d7
+call GET    /api/pins/drone_203
+call POST   /api/raw '{"command": "status drone_203"}'
+call DELETE /api/aliases/drone_203
+
 hr "Start from a known state"
 call POST /api/reset
 call DELETE /api/log

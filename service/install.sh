@@ -10,6 +10,8 @@
 set -euo pipefail
 
 INSTALL_DIR=/opt/usbpower-api
+STATE_DIR=/var/lib/usbpower-api
+ALIASES_FILE=$STATE_DIR/aliases.json
 UNIT_NAME=usbpower-api.service
 UNIT_PATH=/etc/systemd/system/$UNIT_NAME
 
@@ -99,6 +101,14 @@ if [[ -d "$SRC_DIR/static" ]]; then
     done < <(find "$SRC_DIR/static" -type f -print0)
 fi
 
+echo "==> Preparing persistent state in $STATE_DIR"
+install -d -o "$RUN_USER" -g dialout -m 0750 "$STATE_DIR"
+if [[ ! -e "$ALIASES_FILE" ]]; then
+    printf '{}\n' > "$ALIASES_FILE"
+fi
+chown "$RUN_USER":dialout "$ALIASES_FILE"
+chmod 0640 "$ALIASES_FILE"
+
 echo "==> Writing $UNIT_PATH"
 # systemd tracks .device units by real kernel devnode, not by udev symlink.
 # Only add an ordering dependency when the configured port is a real node.
@@ -133,6 +143,7 @@ if systemctl is-active --quiet "$UNIT_NAME"; then
     echo
     echo "usbpower-api is running."
     echo "  serial port : $SERIAL_PORT"
+    echo "  aliases     : $ALIASES_FILE"
     echo "  bind        : $BIND_HOST:$LISTEN_PORT"
     echo "  dashboard   : http://$DISPLAY_HOST:$LISTEN_PORT/"
     echo "  API         : http://$DISPLAY_HOST:$LISTEN_PORT/api"

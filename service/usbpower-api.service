@@ -18,7 +18,8 @@ ExecStart=/usr/bin/python3 /opt/usbpower-api/usbpower_api.py \
     --port /dev/usbpower \
     --baud 115200 \
     --host 0.0.0.0 \
-    --listen-port 9090
+    --listen-port 9090 \
+    --aliases-file /var/lib/usbpower-api/aliases.json
 Restart=on-failure
 RestartSec=3
 # Exit code 78 (EX_CONFIG) means an unrecoverable configuration problem --
@@ -34,6 +35,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+StateDirectory=usbpower-api
+ReadWritePaths=/var/lib/usbpower-api
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

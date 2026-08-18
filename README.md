@@ -157,6 +157,10 @@ The default install binds to all network interfaces on port 9090. Open
 `http://<host-ip>:9090/api` for the JSON endpoint list. Use
 `--host 127.0.0.1` if you want local-only access.
 
+Pin aliases are stored in `/var/lib/usbpower-api/aliases.json` and survive
+service restarts. The file is ordinary JSON (`{"D7": "drone_203"}`), so you can
+also edit it directly; the service reloads it when it changes.
+
 If the dashboard works on `localhost` but not from another machine on the LAN,
 check whether the firewall is blocking port 9090:
 
@@ -208,6 +212,10 @@ through an SSH tunnel or authenticated reverse proxy.
 | GET | `/api/config` | `config` |
 | GET | `/api/status`, `/api/pins` | `status` |
 | GET | `/api/pins/<pin>` | `status <pin>` |
+| GET | `/api/aliases` | -- (list aliases) |
+| GET | `/api/aliases/<pin>` | -- (show one alias) |
+| POST | `/api/aliases/<pin>` | -- (set alias, `{"alias": "drone_203"}`) |
+| DELETE | `/api/aliases/<pin>` | -- (clear alias) |
 | POST | `/api/pins/on` | `set on` |
 | POST | `/api/pins/off` | `set off` |
 | POST | `/api/pins/<pin>/on` | `on <pin> [seconds]` |
@@ -218,16 +226,33 @@ through an SSH tunnel or authenticated reverse proxy.
 | DELETE | `/api/log` | `log clear` |
 | GET | `/api/events` | -- (timer expiries the device reported on its own) |
 | POST | `/api/reset` | `reset` |
+| POST | `/api/service/restart` | restart the service under systemd |
 | POST | `/api/raw` | any command, `{"command": "..."}` |
 
 `on` and `cycle` take an optional `{"seconds": N}` JSON body for the auto-off
 delay and the off-time respectively.
+
+Anywhere the API accepts `<pin>` it also accepts an alias. Aliases are
+case-insensitive, must be 20 characters or fewer, must start with a letter, and
+may contain only letters, numbers, `_`, and `-`. Aliases cannot look like pin
+tokens (`d7`, `7`, `a0`) or reserved command words.
+
+The service restart endpoint exits the process with a restart-request code so
+systemd's `Restart=on-failure` policy starts it again. If you run
+`usbpower_api.py` manually instead of under systemd, this endpoint exits that
+manual process.
 
 ### Usage
 
 ```sh
 # read state
 curl -s localhost:9090/api/status | jq
+
+# name relay 4, then use the name anywhere a pin is accepted
+curl -s -X POST localhost:9090/api/aliases/d7 \
+     -H 'Content-Type: application/json' -d '{"alias": "drone_203"}' | jq
+curl -s -X POST localhost:9090/api/pins/drone_203/cycle \
+     -H 'Content-Type: application/json' -d '{"seconds": 10}' | jq
 
 # relay 1 on, auto-off after 30s
 curl -s -X POST localhost:9090/api/pins/d4/on \

@@ -209,7 +209,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 720px;
+  min-width: 820px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -248,13 +248,47 @@ td:nth-child(4) {
 
 th:nth-child(5),
 td:nth-child(5) {
-  width: 290px;
+  width: 360px;
+}
+
+.port-name {
+  display: grid;
+  gap: 2px;
+}
+
+.alias-label,
+.alias-empty {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alias-label {
+  color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .port-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.alias-editor {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto auto;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.alias-editor[hidden] {
+  display: none;
+}
+
+.alias-input {
+  min-width: 0;
 }
 
 .status-pill {

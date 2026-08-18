@@ -20,6 +20,7 @@ import argparse
 import errno
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 import threading
@@ -41,6 +42,7 @@ import serial
 # to bind). The systemd unit lists this in RestartPreventExitStatus so the
 # service fails once with a clear message instead of restarting forever.
 EXIT_CONFIG = 78           # EX_CONFIG, by convention
+EXIT_RESTART_REQUEST = 75  # EX_TEMPFAIL: systemd Restart=on-failure restarts
 
 FIRST_BYTE_TIMEOUT = 2.0   # how long to wait for a reply to start arriving
 QUIET_GAP = 0.30           # silence this long after data == reply is complete
@@ -271,6 +273,13 @@ def is_error(lines):
 # ----------------------------------------------------------------------------
 
 RE_PIN_TOKEN = re.compile(r"^[dDaA]?\d{1,2}$")
+RE_ALIAS = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,19}$")
+ALIAS_MAX_LEN = 20
+RESERVED_ALIAS_WORDS = {
+    "alias", "aliases", "all", "api", "clear", "config", "cycle", "dump",
+    "events", "health", "help", "log", "off", "on", "pins", "raw", "reset",
+    "restart", "service", "set", "status", "toggle",
+}
 
 
 def normalise_pin(token):
@@ -278,6 +287,15 @@ def normalise_pin(token):
     if not token or not RE_PIN_TOKEN.match(token):
         raise ValueError(f"invalid pin token: {token!r}")
     return token.lower()
+
+
+def canonical_pin(token):
+    pin = normalise_pin(token)
+    if pin.startswith("a"):
+        return f"A{int(pin[1:])}"
+    if pin.startswith("d"):
+        return f"D{int(pin[1:])}"
+    return f"D{int(pin)}"
 
 
 def positive_int(value, name, maximum=65535):
@@ -291,6 +309,158 @@ def positive_int(value, name, maximum=65535):
 
 
 # ----------------------------------------------------------------------------
+# Alias persistence
+# ----------------------------------------------------------------------------
+
+class AliasStore:
+    """Maintains the pin alias map, reloading when the JSON file changes."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        self._aliases = {}
+        self._mtime_ns = None
+        self.reload(force=True)
+
+    def _clean_alias(self, alias):
+        if alias is None:
+            return None
+        if not isinstance(alias, str):
+            raise ValueError("alias must be a string")
+        alias = alias.strip()
+        if not alias:
+            return None
+        if len(alias) > ALIAS_MAX_LEN:
+            raise ValueError(f"alias must be {ALIAS_MAX_LEN} characters or fewer")
+        if not RE_ALIAS.match(alias):
+            raise ValueError(
+                "alias must start with a letter and contain only letters, "
+                "numbers, underscores, or hyphens")
+        folded = alias.lower()
+        if folded in RESERVED_ALIAS_WORDS or RE_PIN_TOKEN.match(alias):
+            raise ValueError(f"alias is reserved: {alias}")
+        return alias
+
+    def _normalise_data(self, data):
+        if isinstance(data, dict) and isinstance(data.get("aliases"), dict):
+            data = data["aliases"]
+        if not isinstance(data, dict):
+            raise ValueError("alias file must contain a JSON object")
+
+        aliases = {}
+        seen = {}
+        for pin_token, alias in data.items():
+            pin = canonical_pin(pin_token)
+            alias = self._clean_alias(alias)
+            if alias is None:
+                continue
+            folded = alias.lower()
+            if folded in seen and seen[folded] != pin:
+                raise ValueError(
+                    f"alias {alias!r} is assigned to both {seen[folded]} and {pin}")
+            seen[folded] = pin
+            aliases[pin] = alias
+        return aliases
+
+    def reload(self, force=False):
+        with self._lock:
+            try:
+                stat = self.path.stat()
+            except FileNotFoundError:
+                if force or self._aliases:
+                    self._aliases = {}
+                    self._mtime_ns = None
+                return
+
+            if not force and stat.st_mtime_ns == self._mtime_ns:
+                return
+
+            try:
+                text = self.path.read_text()
+                data = json.loads(text) if text.strip() else {}
+                aliases = self._normalise_data(data)
+            except Exception as exc:
+                print(f"WARNING: cannot load aliases from {self.path}: {exc}",
+                      flush=True)
+                return
+
+            self._aliases = aliases
+            self._mtime_ns = stat.st_mtime_ns
+
+    def _save_locked(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f".{self.path.name}.tmp")
+        tmp.write_text(json.dumps(self._aliases, indent=2, sort_keys=True) + "\n")
+        tmp.chmod(0o640)
+        os.replace(tmp, self.path)
+        try:
+            self._mtime_ns = self.path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._mtime_ns = None
+
+    def as_dict(self):
+        self.reload()
+        with self._lock:
+            return dict(self._aliases)
+
+    def alias_for_pin(self, pin_token):
+        pin = canonical_pin(pin_token)
+        self.reload()
+        with self._lock:
+            return self._aliases.get(pin)
+
+    def resolve_pin(self, token):
+        if RE_PIN_TOKEN.match(token or ""):
+            return normalise_pin(token)
+
+        wanted = (token or "").strip().lower()
+        self.reload()
+        with self._lock:
+            for pin, alias in self._aliases.items():
+                if alias.lower() == wanted:
+                    return pin.lower()
+        raise ValueError(f"invalid pin or alias token: {token!r}")
+
+    def set_alias(self, pin_token, alias):
+        pin = canonical_pin(self.resolve_pin(pin_token))
+        alias = self._clean_alias(alias)
+        self.reload()
+        with self._lock:
+            if alias is None:
+                self._aliases.pop(pin, None)
+            else:
+                folded = alias.lower()
+                for other_pin, other_alias in self._aliases.items():
+                    if other_pin != pin and other_alias.lower() == folded:
+                        raise ValueError(
+                            f"alias {alias!r} is already assigned to {other_pin}")
+                self._aliases[pin] = alias
+            self._save_locked()
+            return {"pin": pin, "alias": self._aliases.get(pin)}
+
+    def clear_alias(self, pin_token):
+        return self.set_alias(pin_token, None)
+
+    def translate_command(self, command):
+        parts = command.split()
+        if not parts:
+            raise ValueError("empty command")
+
+        cmd = parts[0].lower()
+        translated = list(parts)
+
+        if cmd in ("status", "on", "off", "toggle", "cycle") and len(parts) >= 2:
+            if cmd != "status" or parts[1].lower() != "all":
+                translated[1] = self.resolve_pin(parts[1])
+        elif cmd == "set" and len(parts) >= 3 and parts[1].lower() not in ("on", "off"):
+            translated[1] = self.resolve_pin(parts[1])
+        elif cmd == "dump" and len(parts) >= 2 and not parts[1].isdigit():
+            translated[1] = self.resolve_pin(parts[1])
+
+        return " ".join(translated)
+
+
+# ----------------------------------------------------------------------------
 # HTTP layer
 # ----------------------------------------------------------------------------
 
@@ -300,6 +470,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 class Handler(BaseHTTPRequestHandler):
     server_version = "usbpower-api/1.0"
     device = None       # injected by main()
+    aliases = None      # injected by main()
     started_at = None
 
     # -- helpers -------------------------------------------------------------
@@ -374,6 +545,21 @@ class Handler(BaseHTTPRequestHandler):
             payload.update(parser(lines))
         return self._json(200, payload)
 
+    def _decorate_pins(self, pins):
+        for pin in pins:
+            pin["alias"] = self.aliases.alias_for_pin(pin["pin"])
+        return pins
+
+    def _decorate_changes(self, changes):
+        for change in changes:
+            change["alias"] = self.aliases.alias_for_pin(change["pin"])
+        return changes
+
+    def _decorate_log(self, entries):
+        for entry in entries:
+            entry["alias"] = self.aliases.alias_for_pin(entry["pin"])
+        return entries
+
     def log_message(self, fmt, *args):   # quieter default logging
         print(f"{self.address_string()} {fmt % args}", flush=True)
 
@@ -402,6 +588,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "port": self.device.port_name,
                 "baud": self.device.baud,
+                "aliases_file": str(self.aliases.path),
                 "uptime_s": round(time.time() - self.started_at, 1),
                 "device_connected_s": round(
                     time.time() - self.device.connected_at, 1),
@@ -414,31 +601,57 @@ class Handler(BaseHTTPRequestHandler):
             return self._run("config", lambda l: {"config": parse_config(l)})
 
         if path == "/api/pins":
-            return self._run("status", lambda l: {"pins": parse_pin_states(l)})
+            return self._run("status",
+                             lambda l: {"pins": self._decorate_pins(
+                                 parse_pin_states(l))})
 
         if path == "/api/status":
-            return self._run("status", lambda l: {"pins": parse_pin_states(l)})
+            return self._run("status",
+                             lambda l: {"pins": self._decorate_pins(
+                                 parse_pin_states(l))})
 
         if path == "/api/events":
             limit = int(query.get("limit", [50])[0])
             return self._json(200, {"ok": True,
                                     "events": self.device.recent_events(limit)})
 
+        if path == "/api/aliases":
+            return self._json(200, {
+                "ok": True,
+                "aliases": self.aliases.as_dict(),
+                "max_length": ALIAS_MAX_LEN,
+                "pattern": RE_ALIAS.pattern,
+                "file": str(self.aliases.path),
+            })
+
+        m = re.match(r"^/api/aliases/([^/]+)$", path)
+        if m:
+            try:
+                pin = canonical_pin(self.aliases.resolve_pin(m.group(1)))
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            return self._json(200, {
+                "ok": True,
+                "pin": pin,
+                "alias": self.aliases.alias_for_pin(pin),
+            })
+
         m = re.match(r"^/api/pins/([^/]+)$", path)
         if m:
             try:
-                pin = normalise_pin(m.group(1))
+                pin = self.aliases.resolve_pin(m.group(1))
             except ValueError as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
             return self._run(f"status {pin}",
-                             lambda l: {"pins": parse_pin_states(l)})
+                             lambda l: {"pins": self._decorate_pins(
+                                 parse_pin_states(l))})
 
         if path == "/api/log":
             pin = query.get("pin", [None])[0]
             limit = query.get("limit", [None])[0]
             if pin:
                 try:
-                    cmd = f"dump {normalise_pin(pin)}"
+                    cmd = f"dump {self.aliases.resolve_pin(pin)}"
                 except ValueError as exc:
                     return self._json(400, {"ok": False, "error": str(exc)})
             elif limit:
@@ -451,7 +664,8 @@ class Handler(BaseHTTPRequestHandler):
 
             def parse(lines):
                 entries, shown, total = parse_log(lines)
-                return {"entries": entries, "shown": shown, "total": total}
+                return {"entries": self._decorate_log(entries),
+                        "shown": shown, "total": total}
             return self._run(cmd, parse)
 
         return self._json(404, {"ok": False, "error": f"no route for {path}"})
@@ -464,7 +678,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": str(exc)})
 
         if path == "/api/reset":
-            return self._run("reset", lambda l: {"changes": parse_changes(l)})
+            return self._run("reset",
+                             lambda l: {"changes": self._decorate_changes(
+                                 parse_changes(l))})
+
+        if path == "/api/service/restart":
+            def restart_soon():
+                time.sleep(0.25)
+                print("service restart requested via HTTP", flush=True)
+                os._exit(EXIT_RESTART_REQUEST)
+
+            threading.Thread(target=restart_soon, daemon=True).start()
+            return self._json(202, {
+                "ok": True,
+                "message": "service restart requested",
+                "exit_code": EXIT_RESTART_REQUEST,
+            })
+
+        m = re.match(r"^/api/aliases/([^/]+)$", path)
+        if m:
+            try:
+                result = self.aliases.set_alias(m.group(1), body.get("alias"))
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            result.update({
+                "ok": True,
+                "aliases": self.aliases.as_dict(),
+                "max_length": ALIAS_MAX_LEN,
+                "file": str(self.aliases.path),
+            })
+            return self._json(200, result)
 
         if path == "/api/raw":
             command = body.get("command")
@@ -472,19 +715,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {
                     "ok": False,
                     "error": "body must be {\"command\": \"<device command>\"}"})
-            return self._run(command.strip())
+            try:
+                command = self.aliases.translate_command(command.strip())
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            return self._run(command)
 
         # All pins at once: /api/pins/on | /api/pins/off
         m = re.match(r"^/api/pins/(on|off)$", path)
         if m:
             return self._run(f"set {m.group(1)}",
-                             lambda l: {"changes": parse_changes(l)})
+                             lambda l: {"changes": self._decorate_changes(
+                                 parse_changes(l))})
 
         # Single pin: /api/pins/<pin>/<action>
         m = re.match(r"^/api/pins/([^/]+)/(on|off|toggle|cycle)$", path)
         if m:
             try:
-                pin = normalise_pin(m.group(1))
+                pin = self.aliases.resolve_pin(m.group(1))
             except ValueError as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
             action = m.group(2)
@@ -511,7 +759,8 @@ class Handler(BaseHTTPRequestHandler):
                         "error": f"'{action}' does not take a seconds value"})
                 cmd = f"{action} {pin}"
 
-            return self._run(cmd, lambda l: {"changes": parse_changes(l)})
+            return self._run(cmd, lambda l: {"changes": self._decorate_changes(
+                parse_changes(l))})
 
         return self._json(404, {"ok": False, "error": f"no route for {path}"})
 
@@ -519,6 +768,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/api/log":
             return self._run("log clear")
+        m = re.match(r"^/api/aliases/([^/]+)$", path)
+        if m:
+            try:
+                result = self.aliases.clear_alias(m.group(1))
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            result.update({
+                "ok": True,
+                "aliases": self.aliases.as_dict(),
+                "file": str(self.aliases.path),
+            })
+            return self._json(200, result)
         return self._json(404, {"ok": False, "error": f"no route for {path}"})
 
 
@@ -529,6 +790,10 @@ ENDPOINTS = [
     "GET    /api/status              state of all pins",
     "GET    /api/pins                state of all pins",
     "GET    /api/pins/<pin>          state of one pin",
+    "GET    /api/aliases             list pin aliases",
+    "GET    /api/aliases/<pin>       alias for one pin",
+    "POST   /api/aliases/<pin>       set alias body: {\"alias\": \"name\"}",
+    "DELETE /api/aliases/<pin>       clear alias",
     "POST   /api/pins/on             all pins ON",
     "POST   /api/pins/off            all pins OFF",
     "POST   /api/pins/<pin>/on       pin ON      body: {\"seconds\": N} auto-off",
@@ -539,6 +804,7 @@ ENDPOINTS = [
     "DELETE /api/log                 clear event log",
     "GET    /api/events              unsolicited device events (timers firing)",
     "POST   /api/reset               all pins OFF, cancel timers",
+    "POST   /api/service/restart     restart this service under systemd",
     "POST   /api/raw                 body: {\"command\": \"...\"} passthrough",
 ]
 
@@ -553,6 +819,9 @@ def main():
                     help="bind address (default: 127.0.0.1; see security note)")
     ap.add_argument("--listen-port", type=int, default=9090,
                     help="HTTP port (default: 9090)")
+    ap.add_argument("--aliases-file",
+                    default=str(Path(__file__).resolve().parent / "aliases.json"),
+                    help="JSON file for persistent pin aliases")
     ap.add_argument("--boot-wait", type=float, default=2.5,
                     help="seconds to wait for the sketch to boot after the "
                          "port is opened (opening resets the board)")
@@ -592,6 +861,7 @@ def main():
         raise SystemExit(1)
 
     Handler.device = device
+    Handler.aliases = AliasStore(args.aliases_file)
     Handler.started_at = time.time()
 
     print(f"usbpower-api listening on http://{args.host}:{args.listen_port}",
